@@ -25,7 +25,6 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.index.*;
 import org.apache.lucene.index.memory.MemoryIndex;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.util.CloseableThreadLocal;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.mapper.ParseContext;
@@ -42,10 +41,7 @@ import java.util.List;
  */
 class MultiDocumentPercolatorIndex implements PercolatorIndex {
 
-    private final CloseableThreadLocal<MemoryIndex> cache;
-
-    MultiDocumentPercolatorIndex(CloseableThreadLocal<MemoryIndex> cache) {
-        this.cache = cache;
+    MultiDocumentPercolatorIndex() {
     }
 
     @Override
@@ -61,7 +57,7 @@ class MultiDocumentPercolatorIndex implements PercolatorIndex {
             if (rootDocIndex == i) {
                 // the last doc is always the rootDoc, since that is usually the biggest document it make sense
                 // to reuse the MemoryIndex it uses
-                memoryIndex = rootDocMemoryIndex = cache.get();
+                memoryIndex = rootDocMemoryIndex = new MemoryIndex(true);
             } else {
                 memoryIndex = new MemoryIndex(true);
             }

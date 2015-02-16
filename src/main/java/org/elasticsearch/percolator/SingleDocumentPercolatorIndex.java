@@ -17,70 +17,72 @@
  * under the License.
  */
 
-
 package org.elasticsearch.percolator;
 
-import org.apache.lucene.analysis.TokenStream;
-import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.index.memory.MemoryIndex;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.RAMDirectory;
 import org.apache.lucene.util.CloseableThreadLocal;
+import org.apache.lucene.util.Version;
 import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.mapper.ParsedDocument;
-import org.elasticsearch.index.mapper.internal.UidFieldMapper;
 
 import java.io.IOException;
 
 /**
- * Implementation of {@link PercolatorIndex} that can only hold a single Lucene document
- * and is optimized for that
+ * Implementation of {@link PercolatorIndex} that can only hold a single Lucene
+ * document and is optimized for that
  */
 class SingleDocumentPercolatorIndex implements PercolatorIndex {
 
-    private final CloseableThreadLocal<MemoryIndex> cache;
+    private final CloseableThreadLocal<RAMDirectory> cache;
 
-    SingleDocumentPercolatorIndex(CloseableThreadLocal<MemoryIndex> cache) {
+    SingleDocumentPercolatorIndex(CloseableThreadLocal<RAMDirectory> cache) {
         this.cache = cache;
     }
 
+    ESLogger logger = Loggers.getLogger(SingleDocumentPercolatorIndex.class);
+
     @Override
     public void prepare(PercolateContext context, ParsedDocument parsedDocument) {
-        MemoryIndex memoryIndex = cache.get();
-        for (IndexableField field : parsedDocument.rootDoc().getFields()) {
-            if (!field.fieldType().indexed() && field.name().equals(UidFieldMapper.NAME)) {
-                continue;
-            }
-            try {
-                // TODO: instead of passing null here, we can have a CTL<Map<String,TokenStream>> and pass previous,
-                // like the indexer does
-                TokenStream tokenStream = field.tokenStream(parsedDocument.analyzer(), null);
-                if (tokenStream != null) {
-                    memoryIndex.addField(field.name(), tokenStream, field.boost());
-                }
-            } catch (IOException e) {
-                throw new ElasticsearchException("Failed to create token stream", e);
-            }
+        Directory dir = cache.get();
+        try {
+            IndexWriter writer = new IndexWriter(dir, new IndexWriterConfig(Version.LATEST, parsedDocument.analyzer()));
+            writer.deleteAll();
+            writer.addDocument(parsedDocument.rootDoc());
+            writer.commit();
+            writer.close();
+        } catch (IOException ioe) {
+            throw new ElasticsearchException("failed to prepare percolator index on ram directory", ioe);
         }
-        context.initialize(new DocEngineSearcher(memoryIndex), parsedDocument);
+        try {
+            context.initialize(new DocEngineSearcher(dir.toString(), new IndexSearcher(DirectoryReader.open(dir))), parsedDocument);
+        } catch (IOException ioe) {
+            throw new ElasticsearchException("failed to open percolator index on ram directory", ioe);
+        }
     }
 
     private class DocEngineSearcher extends Engine.Searcher {
 
-        private final MemoryIndex memoryIndex;
-
-        public DocEngineSearcher(MemoryIndex memoryIndex) {
-            super("percolate", memoryIndex.createSearcher());
-            this.memoryIndex = memoryIndex;
+        public DocEngineSearcher(String source, IndexSearcher searcher) {
+            super(source, searcher);
         }
 
         @Override
         public void close() throws ElasticsearchException {
             try {
-                this.reader().close();
-                memoryIndex.reset();
+                reader().close();
             } catch (IOException e) {
-                throw new ElasticsearchException("failed to close percolator in-memory index", e);
+                throw new ElasticsearchException("failed to close percolator index on ram directory", e);
             }
         }
+
     }
+
 }

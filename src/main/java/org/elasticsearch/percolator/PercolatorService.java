@@ -20,11 +20,11 @@ package org.elasticsearch.percolator;
 
 import com.carrotsearch.hppc.ByteObjectOpenHashMap;
 import com.google.common.collect.Lists;
+import org.apache.lucene.document.StoredField;
 import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.ReaderUtil;
-import org.apache.lucene.index.memory.ExtendedMemoryIndex;
-import org.apache.lucene.index.memory.MemoryIndex;
 import org.apache.lucene.search.*;
+import org.apache.lucene.store.RAMDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CloseableThreadLocal;
 import org.elasticsearch.ElasticsearchException;
@@ -52,8 +52,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.text.BytesText;
 import org.elasticsearch.common.text.StringText;
 import org.elasticsearch.common.text.Text;
-import org.elasticsearch.common.unit.ByteSizeUnit;
-import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
@@ -121,7 +119,7 @@ public class PercolatorService extends AbstractComponent {
     private final ScriptService scriptService;
     private final MappingUpdatedAction mappingUpdatedAction;
 
-    private final CloseableThreadLocal<MemoryIndex> cache;
+    private final CloseableThreadLocal<RAMDirectory> cache;
 
     @Inject
     public PercolatorService(Settings settings, IndicesService indicesService, CacheRecycler cacheRecycler,
@@ -142,15 +140,14 @@ public class PercolatorService extends AbstractComponent {
         this.mappingUpdatedAction = mappingUpdatedAction;
         this.sortParseElement = new SortParseElement();
 
-        final long maxReuseBytes = settings.getAsBytesSize("indices.memory.memory_index.size_per_thread", new ByteSizeValue(1, ByteSizeUnit.MB)).bytes();
-        cache = new CloseableThreadLocal<MemoryIndex>() {
+        cache = new CloseableThreadLocal<RAMDirectory>() {
             @Override
-            protected MemoryIndex initialValue() {
-                return new ExtendedMemoryIndex(true, maxReuseBytes);
+            protected RAMDirectory initialValue() {
+                return new RAMDirectory();
             }
         };
         single = new SingleDocumentPercolatorIndex(cache);
-        multi = new MultiDocumentPercolatorIndex(cache);
+        multi = new MultiDocumentPercolatorIndex();
 
         percolatorTypes = new ByteObjectOpenHashMap<>(6);
         percolatorTypes.put(countPercolator.id(), countPercolator);
@@ -359,6 +356,32 @@ public class PercolatorService extends AbstractComponent {
                     } else if (token == null) {
                         break;
                     }
+                }
+            }
+            
+            parser.close();
+            currentFieldName = null;
+            parser = XContentFactory.xContent(source).createParser(source);
+            token = parser.nextToken();
+            assert token == XContentParser.Token.START_OBJECT;
+            while ((token = parser.nextToken()) != XContentParser.Token.END_OBJECT) {
+                if (token == XContentParser.Token.FIELD_NAME) {
+                    currentFieldName = parser.currentName();
+                } else if (token == XContentParser.Token.START_OBJECT) {
+                    if ("doc".equals(currentFieldName)) {
+                        BytesStreamOutput bStream = new BytesStreamOutput();
+                        XContentBuilder builder = XContentFactory.contentBuilder(XContentType.JSON, bStream);
+                        builder.copyCurrentStructure(parser);
+                        builder.close();
+                        doc.rootDoc().add(new StoredField("_source", bStream.bytes().toBytesRef()));
+                        bStream.close();
+                        doc.rootDoc().add(new StoredField("_timestamp", System.currentTimeMillis()));
+                        break;
+                    } else {
+                        parser.skipChildren();
+                    }
+                } else if (token == null) {
+                    break;
                 }
             }
 

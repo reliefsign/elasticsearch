@@ -490,6 +490,7 @@
                             <excludes>
                                 <exclude>**/Abstract*.class</exclude>
                                 <exclude>**/*StressTest.class</exclude>
+                                <exclude>**/bwcompat/*</exclude>
                             </excludes>
                             <jvmArgs>
                                 <param>-Xmx${tests.heap.size}</param>
